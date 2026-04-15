@@ -187,7 +187,13 @@ class AgentLoop:
         )
         self.memory_store.compact(CompactionPolicy())
 
-        response = runtime_state.get("response") or self._compose_response(task, reflection, action_results)
+        response = self._compose_response(
+            task=task,
+            reflection=reflection,
+            action_results=action_results,
+            runtime_state=runtime_state,
+            blocked_actions=blocked_actions,
+        )
         total_run_ms = int((perf_counter() - started) * 1000)
 
         metrics = {
@@ -278,13 +284,37 @@ class AgentLoop:
         task: str,
         reflection: Reflection,
         action_results: List[ActionResult],
+        runtime_state: Dict[str, Any],
+        blocked_actions: List[str],
     ) -> str:
         successful_actions = [r.action_name for r in action_results if r.success and not r.blocked]
-        return (
-            f"Task '{task}' processed. "
-            f"Successful actions: {successful_actions}. "
-            f"Reflection confidence: {reflection.confidence:.2f}."
+        notes = runtime_state.get("notes", [])
+        clean_notes = [note for note in notes if isinstance(note, str) and not note.startswith("act_hint:")]
+        compact_notes = "; ".join(clean_notes[-6:]) if clean_notes else "none"
+        prompt = (
+            "You are Hermes, a concise and practical assistant.\n"
+            f"User task: {task}\n"
+            f"Successful actions: {successful_actions}\n"
+            f"Blocked actions: {blocked_actions}\n"
+            f"Execution notes: {compact_notes}\n"
+            f"Reflection improvements: {reflection.improvements}\n"
+            "Write a direct user-facing answer in the same language as the task. "
+            "Do not reveal internal tool traces, model routing, or debug tags."
         )
+        try:
+            text = self.model_router.invoke(
+                StepType.REFLECT,
+                RiskLevel.MEDIUM,
+                prompt=prompt,
+                clients=self.model_clients,
+            )
+            return text.strip()
+        except Exception:
+            return (
+                f"任务已执行完成。成功步骤: {successful_actions}; "
+                f"阻塞步骤: {blocked_actions or '无'}; "
+                f"置信度: {reflection.confidence:.2f}。"
+            )
 
     def _is_success(self, action_results: List[ActionResult]) -> bool:
         non_blocked = [r for r in action_results if not r.blocked]

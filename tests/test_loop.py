@@ -13,6 +13,12 @@ def test_agent_loop_run_returns_expected_shape() -> None:
     assert result.reflection.summary
 
 
+def test_agent_loop_response_hides_internal_debug_notes() -> None:
+    loop = AgentLoop()
+    result = loop.run("帮我总结今天服务状态", TaskContext(session_id="s-debug"))
+    assert "act_hint" not in result.response
+
+
 def test_agent_loop_blocks_guarded_cleanup_without_permission() -> None:
     loop = AgentLoop()
     result = loop.run("please delete temp files safely", TaskContext(session_id="s2"))
