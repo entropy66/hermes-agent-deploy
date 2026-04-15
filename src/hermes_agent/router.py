@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Dict
 
 from .models import ModelClient
 from .types import ModelTarget, RiskLevel, RouteDecision, StepType
+
+logger = logging.getLogger(__name__)
 
 
 class ModelRouter:
@@ -50,7 +53,7 @@ class ModelRouter:
 
         try:
             return primary_client.generate(prompt=prompt, max_tokens=decision.primary.max_tokens)
-        except Exception:
+        except Exception as primary_err:
             if decision.fallback is None:
                 raise
             fallback_client = clients.get(decision.fallback.provider)
@@ -58,6 +61,13 @@ class ModelRouter:
                 raise RuntimeError(
                     f"missing fallback model client: {decision.fallback.provider}"
                 )
+            logger.warning(
+                "Primary model failed (%s/%s). Falling back to %s. Error=%s",
+                decision.primary.provider,
+                decision.primary.name,
+                decision.fallback.provider,
+                primary_err,
+            )
             return fallback_client.generate(
                 prompt=prompt, max_tokens=decision.fallback.max_tokens
             )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Protocol
+from typing import Any, Dict, List, Protocol
 from urllib import error, request
 
 
@@ -42,6 +42,10 @@ class CloudModelClient:
             self.base_url,
             (self.responses_url or os.getenv("OPENAI_RESPONSES_URL", "")).strip() or None,
         )
+        self.response_urls = self._build_responses_url_candidates(
+            self.base_url,
+            self.responses_url,
+        )
         self.model = (self.model or os.getenv("OPENAI_MODEL", "gpt-5.4")).strip()
         self.reasoning_effort = (
             self.reasoning_effort or os.getenv("OPENAI_REASONING_EFFORT", "xhigh")
@@ -66,18 +70,46 @@ class CloudModelClient:
         max_tokens: int,
         with_reasoning: bool,
     ) -> str:
-        payload: Dict[str, Any] = {
+        payloads = self._payload_variants(prompt=prompt, max_tokens=max_tokens, with_reasoning=with_reasoning)
+        errors: List[str] = []
+        for url in self.response_urls:
+            for payload in payloads:
+                token_key = "max_output_tokens" if "max_output_tokens" in payload else "max_tokens"
+                try:
+                    parsed = self._post_json(url=url, payload=payload)
+                    output_text = self._extract_output_text(parsed)
+                    if output_text:
+                        return output_text
+                    errors.append(f"{url} ({token_key}): empty output_text")
+                except RuntimeError as exc:
+                    errors.append(f"{url} ({token_key}): {exc}")
+                    continue
+
+        compact = " | ".join(errors[:3])
+        raise RuntimeError(f"responses api failed across endpoints: {compact}")
+
+    def _payload_variants(
+        self,
+        prompt: str,
+        max_tokens: int,
+        with_reasoning: bool,
+    ) -> List[Dict[str, Any]]:
+        base: Dict[str, Any] = {
             "model": self.model,
             "input": prompt,
-            "max_output_tokens": max_tokens,
             "store": bool(self.store),
         }
         if with_reasoning and self.reasoning_effort:
-            payload["reasoning"] = {"effort": self.reasoning_effort}
+            base["reasoning"] = {"effort": self.reasoning_effort}
+        return [
+            {**base, "max_output_tokens": max_tokens},
+            {**base, "max_tokens": max_tokens},
+        ]
 
+    def _post_json(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(
-            self.responses_url,
+            url,
             data=body,
             headers={
                 "Content-Type": "application/json",
@@ -90,15 +122,10 @@ class CloudModelClient:
                 raw = resp.read().decode("utf-8")
         except error.HTTPError as http_err:
             details = self._read_http_error_body(http_err)
-            raise RuntimeError(f"responses api http {http_err.code}: {details}") from http_err
+            raise RuntimeError(f"http {http_err.code}: {details}") from http_err
         except error.URLError as url_err:
-            raise RuntimeError(f"responses api connection error: {url_err.reason}") from url_err
-
-        parsed = json.loads(raw)
-        output_text = self._extract_output_text(parsed)
-        if not output_text:
-            raise RuntimeError("responses api returned empty output_text")
-        return output_text
+            raise RuntimeError(f"connection error: {url_err.reason}") from url_err
+        return json.loads(raw)
 
     def _extract_output_text(self, payload: Dict[str, Any]) -> str:
         direct = payload.get("output_text")
@@ -140,6 +167,28 @@ class CloudModelClient:
         if normalized.endswith("/v1"):
             return f"{normalized}/responses"
         return f"{normalized}/v1/responses"
+
+    def _build_responses_url_candidates(self, base_url: str, primary: str) -> List[str]:
+        candidates: List[str] = []
+
+        def add(url: str) -> None:
+            url = url.rstrip("/")
+            if url and url not in candidates:
+                candidates.append(url)
+
+        add(primary)
+        normalized = base_url.rstrip("/")
+        if normalized.endswith("/v1"):
+            add(f"{normalized}/responses")
+            add(f"{normalized[:-3]}/responses")
+        elif normalized.endswith("/responses"):
+            add(normalized)
+            base = normalized[: -len("/responses")]
+            add(f"{base}/v1/responses")
+        else:
+            add(f"{normalized}/responses")
+            add(f"{normalized}/v1/responses")
+        return candidates
 
     def _env_bool(self, key: str, default: bool) -> bool:
         raw = os.getenv(key)
