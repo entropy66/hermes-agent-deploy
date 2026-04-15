@@ -20,6 +20,7 @@ dev = [
 
 [project.scripts]
 hermes-agent = "hermes_agent.cli:main"
+hermes-agent-telegram = "hermes_agent.telegram_bridge:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

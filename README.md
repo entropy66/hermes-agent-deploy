@@ -44,6 +44,43 @@ Allow guarded actions (still blocks hard-dangerous commands):
 hermes-agent "clean temp files carefully" --allow-guarded
 ```
 
+## OpenAI Real Model Call (gpt-5.4)
+
+Set environment variables before running:
+
+```bash
+export OPENAI_API_KEY="<your_key>"
+export OPENAI_BASE_URL="https://api.openai.com/v1"
+export OPENAI_MODEL="gpt-5.4"
+export OPENAI_REASONING_EFFORT="xhigh"
+export OPENAI_STORE="false"
+```
+
+For OpenAI-compatible gateways, set:
+
+```bash
+export OPENAI_BASE_URL="https://your-gateway"
+export OPENAI_RESPONSES_URL="https://your-gateway/responses"
+```
+
+## Telegram Bridge
+
+Run Hermes from Telegram chat via long polling:
+
+```bash
+export TELEGRAM_BOT_TOKEN="<bot_token>"
+export TELEGRAM_ALLOWED_CHAT_IDS="123456789"
+export HERMES_MAX_STEPS="8"
+hermes-agent-telegram
+```
+
+Optional:
+
+```bash
+export HERMES_ALLOW_GUARDED="1"
+hermes-agent-telegram --allow-guarded-from-env
+```
+
 ## Run Tests
 
 ```bash
