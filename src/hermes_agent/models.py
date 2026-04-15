@@ -34,6 +34,7 @@ class CloudModelClient:
     reasoning_effort: str | None = None
     timeout_seconds: int = 45
     store: bool | None = None
+    chat_completions_url: str | None = None
 
     def __post_init__(self) -> None:
         self.api_key = (self.api_key or os.getenv("OPENAI_API_KEY", "")).strip() or None
@@ -45,6 +46,14 @@ class CloudModelClient:
         self.response_urls = self._build_responses_url_candidates(
             self.base_url,
             self.responses_url,
+        )
+        explicit_chat_url = (
+            self.chat_completions_url or os.getenv("OPENAI_CHAT_COMPLETIONS_URL", "")
+        ).strip() or None
+        self.chat_completions_url = self._build_chat_completions_url(self.base_url, explicit_chat_url)
+        self.chat_completion_urls = self._build_chat_completions_url_candidates(
+            self.base_url,
+            self.chat_completions_url,
         )
         self.model = (self.model or os.getenv("OPENAI_MODEL", "gpt-5.4")).strip()
         self.reasoning_effort = (
@@ -85,8 +94,12 @@ class CloudModelClient:
                     errors.append(f"{url} ({token_key}): {exc}")
                     continue
 
-        compact = " | ".join(errors[:3])
-        raise RuntimeError(f"responses api failed across endpoints: {compact}")
+        chat_text, chat_errors = self._try_chat_completions(prompt=prompt, max_tokens=max_tokens)
+        if chat_text:
+            return chat_text
+        errors.extend(chat_errors)
+        compact = " | ".join(errors[:4])
+        raise RuntimeError(f"model api failed across endpoints: {compact}")
 
     def _payload_variants(
         self,
@@ -126,6 +139,51 @@ class CloudModelClient:
         except error.URLError as url_err:
             raise RuntimeError(f"connection error: {url_err.reason}") from url_err
         return json.loads(raw)
+
+    def _try_chat_completions(self, prompt: str, max_tokens: int) -> tuple[str, List[str]]:
+        errors: List[str] = []
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+        for url in self.chat_completion_urls:
+            try:
+                parsed = self._post_json(url=url, payload=payload)
+                text = self._extract_chat_completion_text(parsed)
+                if text:
+                    return text, []
+                errors.append(f"{url} (chat): empty choices")
+            except RuntimeError as exc:
+                errors.append(f"{url} (chat): {exc}")
+                continue
+        return "", errors
+
+    def _extract_chat_completion_text(self, payload: Dict[str, Any]) -> str:
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        first = choices[0]
+        if not isinstance(first, dict):
+            return ""
+        message = first.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list):
+                parts: List[str] = []
+                for part in content:
+                    if isinstance(part, dict):
+                        text = part.get("text")
+                        if isinstance(text, str) and text.strip():
+                            parts.append(text.strip())
+                return "\n".join(parts).strip()
+        text = first.get("text")
+        if isinstance(text, str):
+            return text.strip()
+        return ""
 
     def _extract_output_text(self, payload: Dict[str, Any]) -> str:
         direct = payload.get("output_text")
@@ -168,6 +226,16 @@ class CloudModelClient:
             return f"{normalized}/responses"
         return f"{normalized}/v1/responses"
 
+    def _build_chat_completions_url(self, base_url: str, explicit_url: str | None) -> str:
+        if explicit_url:
+            return explicit_url.rstrip("/")
+        normalized = base_url.rstrip("/")
+        if normalized.endswith("/chat/completions"):
+            return normalized
+        if normalized.endswith("/v1"):
+            return f"{normalized}/chat/completions"
+        return f"{normalized}/v1/chat/completions"
+
     def _build_responses_url_candidates(self, base_url: str, primary: str) -> List[str]:
         candidates: List[str] = []
 
@@ -188,6 +256,28 @@ class CloudModelClient:
         else:
             add(f"{normalized}/responses")
             add(f"{normalized}/v1/responses")
+        return candidates
+
+    def _build_chat_completions_url_candidates(self, base_url: str, primary: str) -> List[str]:
+        candidates: List[str] = []
+
+        def add(url: str) -> None:
+            url = url.rstrip("/")
+            if url and url not in candidates:
+                candidates.append(url)
+
+        add(primary)
+        normalized = base_url.rstrip("/")
+        if normalized.endswith("/v1"):
+            add(f"{normalized}/chat/completions")
+            add(f"{normalized[:-3]}/chat/completions")
+        elif normalized.endswith("/chat/completions"):
+            add(normalized)
+            base = normalized[: -len("/chat/completions")]
+            add(f"{base}/v1/chat/completions")
+        else:
+            add(f"{normalized}/chat/completions")
+            add(f"{normalized}/v1/chat/completions")
         return candidates
 
     def _env_bool(self, key: str, default: bool) -> bool:

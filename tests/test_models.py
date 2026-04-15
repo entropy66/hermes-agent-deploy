@@ -17,6 +17,7 @@ def test_cloud_client_builds_multiple_endpoint_candidates() -> None:
     )
     assert client.response_urls[0] == "https://api.negentropypath.xyz/responses"
     assert "https://api.negentropypath.xyz/v1/responses" in client.response_urls
+    assert "https://api.negentropypath.xyz/v1/chat/completions" in client.chat_completion_urls
 
 
 def test_cloud_client_retries_payload_field_variant() -> None:
@@ -34,3 +35,28 @@ def test_cloud_client_retries_payload_field_variant() -> None:
     out = client.generate("test", max_tokens=77)
     assert out == "ok from max_tokens"
     assert len(calls) >= 2
+
+
+def test_cloud_client_falls_back_to_chat_completions_when_responses_fails() -> None:
+    client = CloudModelClient(api_key="test", base_url="https://example.com")
+
+    def fake_post(url, payload):
+        if url.endswith("/responses"):
+            raise RuntimeError("http 404: not found")
+        if url.endswith("/chat/completions"):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "chat completion ok",
+                        }
+                    }
+                ]
+            }
+        raise RuntimeError("unexpected endpoint")
+
+    client.response_urls = ["https://example.com/responses"]
+    client.chat_completion_urls = ["https://example.com/chat/completions"]
+    client._post_json = fake_post  # type: ignore[method-assign]
+    out = client.generate("hello", max_tokens=40)
+    assert out == "chat completion ok"
